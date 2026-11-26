@@ -166,11 +166,11 @@ test("when Serper fails, Gemini is explicitly told not to guess current facts", 
   process.env.SERPER_API_KEY = "serper-test-key";
   process.env.GEMINI_API_KEY = "gemini-test-key";
   let geminiBody;
-  t.mock.method(globalThis, "fetch", async url => {
+  t.mock.method(globalThis, "fetch", async (url, options) => {
     if (String(url).includes("google.serper.dev")) {
       return new Response(JSON.stringify({ error: "temporary failure" }), { status: 503 });
     }
-    geminiBody = JSON.parse(arguments?.[1]?.body || "{}");
+    geminiBody = JSON.parse(options.body);
     return new Response(JSON.stringify({
       candidates: [{ content: { parts: [{ text: "Сейчас не удалось проверить актуальную информацию." }] } }]
     }), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -181,6 +181,7 @@ test("when Serper fails, Gemini is explicitly told not to guess current facts", 
     const res = { status() { return this; }, json(value) { payload = value; return value; }, setHeader() {} };
     await handler({ method: "POST", body: { request: { command: "Какая погода сегодня?" } } }, res);
     assert.equal(payload.response.text, "Сейчас не удалось проверить актуальную информацию.");
+    assert.match(geminiBody.contents.at(-1).parts[0].text, /актуальные данные не удалось получить через поиск/);
   } finally {
     if (previousSerperKey === undefined) delete process.env.SERPER_API_KEY;
     else process.env.SERPER_API_KEY = previousSerperKey;
