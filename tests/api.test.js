@@ -13,6 +13,9 @@ test("Alice response uses required response envelope", () => {
 test("search intent detects Russian and English freshness requests", () => {
   assert.equal(isSearchIntent("Какая погода сегодня?"), true);
   assert.equal(isSearchIntent("What is the latest news?"), true);
+  assert.equal(isSearchIntent("Какая последняя версия Ubuntu Server LTS?"), true);
+  assert.equal(isSearchIntent("Какие процессоры AMD Ryzen вышли в 2026 году?"), true);
+  assert.equal(isSearchIntent("Кто сейчас генеральный директор NVIDIA?"), true);
   assert.equal(isSearchIntent("Расскажи сказку"), false);
 });
 
@@ -22,13 +25,13 @@ test("long responses are cut at a natural boundary and stay within Alice limit",
   assert.ok(value.endsWith("."));
 });
 
-test("history filters malformed messages and keeps last 8", () => {
+test("history filters malformed messages and keeps last 4", () => {
   const input = Array.from({ length: 12 }, (_, i) => ({ role: i % 2 ? "model" : "user", text: String(i) }));
   input.push({ role: "hacker", text: "ignore" }, { role: "user", text: 17 });
   const result = safeHistory(input);
-  assert.equal(result.length, 8);
-  assert.equal(result[0].text, "4");
-  assert.equal(result[7].text, "11");
+  assert.equal(result.length, 4);
+  assert.equal(result[0].text, "8");
+  assert.equal(result[3].text, "11");
 });
 
 test("session history stays within the 1 KB Yandex state limit", () => {
@@ -118,4 +121,70 @@ test("Node.js fetch abort messages are classified as timeouts", () => {
   assert.equal(isTimeoutError(error), true);
   assert.match(errorForUser(error), /слишком медленно/);
   assert.equal(isTimeoutError(new Error("GEMINI_KEY_REJECTED")), false);
+});
+
+
+test("freshness questions use Serper results before Gemini", async t => {
+  const previousSerperKey = process.env.SERPER_API_KEY;
+  const previousGeminiKey = process.env.GEMINI_API_KEY;
+  process.env.SERPER_API_KEY = "serper-test-key";
+  process.env.GEMINI_API_KEY = "gemini-test-key";
+  let calls = 0;
+  let geminiBody;
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    calls += 1;
+    if (String(url).includes("google.serper.dev")) {
+      assert.equal(options.headers["X-API-KEY"], "serper-test-key");
+      return new Response(JSON.stringify({
+        organic: [{ title: "Погода в Хельсинки", snippet: "Обновлённые данные", link: "https://example.test/weather" }]
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    geminiBody = JSON.parse(options.body);
+    return new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: "Ответ по результатам поиска" }] } }]
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  });
+
+  try {
+    let payload;
+    const res = { status() { return this; }, json(value) { payload = value; return value; }, setHeader() {} };
+    await handler({ method: "POST", body: { request: { command: "Какая погода сегодня в Хельсинки?" } } }, res);
+    assert.equal(calls, 2);
+    assert.match(geminiBody.contents.at(-1).parts[0].text, /Обновлённые данные/);
+    assert.equal(payload.response.text, "Ответ по результатам поиска");
+  } finally {
+    if (previousSerperKey === undefined) delete process.env.SERPER_API_KEY;
+    else process.env.SERPER_API_KEY = previousSerperKey;
+    if (previousGeminiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousGeminiKey;
+  }
+});
+
+test("when Serper fails, Gemini is explicitly told not to guess current facts", async t => {
+  const previousSerperKey = process.env.SERPER_API_KEY;
+  const previousGeminiKey = process.env.GEMINI_API_KEY;
+  process.env.SERPER_API_KEY = "serper-test-key";
+  process.env.GEMINI_API_KEY = "gemini-test-key";
+  let geminiBody;
+  t.mock.method(globalThis, "fetch", async url => {
+    if (String(url).includes("google.serper.dev")) {
+      return new Response(JSON.stringify({ error: "temporary failure" }), { status: 503 });
+    }
+    geminiBody = JSON.parse(arguments?.[1]?.body || "{}");
+    return new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: "Сейчас не удалось проверить актуальную информацию." }] } }]
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  });
+
+  try {
+    let payload;
+    const res = { status() { return this; }, json(value) { payload = value; return value; }, setHeader() {} };
+    await handler({ method: "POST", body: { request: { command: "Какая погода сегодня?" } } }, res);
+    assert.equal(payload.response.text, "Сейчас не удалось проверить актуальную информацию.");
+  } finally {
+    if (previousSerperKey === undefined) delete process.env.SERPER_API_KEY;
+    else process.env.SERPER_API_KEY = previousSerperKey;
+    if (previousGeminiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousGeminiKey;
+  }
 });
