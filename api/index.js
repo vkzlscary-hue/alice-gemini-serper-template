@@ -16,11 +16,37 @@ const SYSTEM_PROMPT = [
   "Если не знаешь ответа, честно скажи об этом."
 ].join(" ");
 
+function truncateUtf8(value, maxBytes) {
+  const encoder = new TextEncoder();
+  let output = "";
+  let used = 0;
+  for (const character of String(value)) {
+    const size = encoder.encode(character).length;
+    if (used + size > maxBytes) break;
+    output += character;
+    used += size;
+  }
+  return output;
+}
+
 function fitHistory(history) {
   const result = safeHistory(history);
   const encoder = new TextEncoder();
+  const serializedSize = () => encoder.encode(JSON.stringify({ history: result })).length;
 
-  while (result.length && encoder.encode(JSON.stringify({ history: result })).length > MAX_SESSION_STATE_BYTES) {
+  while (result.length > 2 && serializedSize() > MAX_SESSION_STATE_BYTES) {
+    result.shift();
+  }
+
+  if (serializedSize() > MAX_SESSION_STATE_BYTES && result.length === 2) {
+    for (const item of result) item.text = truncateUtf8(item.text, 300);
+  }
+
+  if (serializedSize() > MAX_SESSION_STATE_BYTES && result.length === 1) {
+    result[0].text = truncateUtf8(result[0].text, 700);
+  }
+
+  while (result.length && serializedSize() > MAX_SESSION_STATE_BYTES) {
     result.shift();
   }
   return result;
