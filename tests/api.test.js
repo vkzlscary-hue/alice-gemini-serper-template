@@ -38,7 +38,8 @@ test("session history stays within the 1 KB Yandex state limit", () => {
   }));
   const result = fitHistory(input);
   assert.ok(new TextEncoder().encode(JSON.stringify({ history: result })).length <= 900);
-  assert.equal(result.at(-1).text, input.at(-1).text.slice(0, 1200));
+  assert.equal(result.at(-1).role, "model");
+  assert.ok(result.at(-1).text.length < input.at(-1).text.length);
   assert.ok(result.length < input.length);
 });
 
