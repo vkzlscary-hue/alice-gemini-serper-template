@@ -85,7 +85,7 @@ function fitAliceText(value) {
 }
 
 function isSearchIntent(text) {
-  return /\\b(latest|today|current|currently|news|weather|price|exchange rate|recent|release|released|version|search|look up)\\b|сегодня|сейчас|последн|новост|погод|курс валют|найди|поищи|актуальн|сколько стоит|свежие данные|вышл[аио]?|релиз|верси[яию]|кто такой|генеральн[ыо]й директор/i.test(text);
+  return /\b(latest|today|current|currently|news|weather|price|exchange rate|recent|release|released|version|search|look up)\b|сегодня|сейчас|последн|новост|погод|курс валют|найди|поищи|актуальн|сколько стоит|свежие данные|вышл[аио]?|релиз|верси[яию]|кто такой|генеральн[ыо]й директор/i.test(text);
 }
 
 function safeHistory(history) {
@@ -157,7 +157,7 @@ async function searchWeb(query, timeoutMs) {
 
     const answerBox = data.answerBox?.answer || data.answerBox?.snippet;
     if (answerBox) items.unshift(`Краткий ответ поисковика: ${String(answerBox).slice(0, 350)}`);
-    const context = items.length ? items.join("\\n") : "";
+    const context = items.length ? items.join("\n") : "";
     const result = {
       context,
       status: context ? "success" : "no_results",
@@ -345,7 +345,7 @@ export default async function handler(req, res) {
     }
 
     const geminiInput = needsFreshData && !searchContext
-      ? `${text}\\n\\nВАЖНО: актуальные данные не удалось получить через поиск. Не сообщай текущие сведения как факт и не делай предположений. Кратко объясни, что проверить актуальную информацию сейчас не удалось.`
+      ? `${text}\n\nВАЖНО: актуальные данные не удалось получить через поиск. Не сообщай текущие сведения как факт и не делай предположений. Кратко объясни, что проверить актуальную информацию сейчас не удалось.`
       : text;
 
     const answer = await askGemini(
