@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import handler, { aliceResponse, fitAliceText, fitHistory, isSearchIntent, safeHistory } from "../api/index.js";
+import handler, { aliceResponse, errorForUser, fitAliceText, fitHistory, isSearchIntent, isTimeoutError, safeHistory } from "../api/index.js";
 
 test("Alice response uses required response envelope", () => {
   const result = aliceResponse("Привет", false, [{ role: "user", text: "тест" }]);
@@ -111,4 +111,11 @@ test("Gemini 503 is retried once and the answer is returned", async t => {
     if (previousModel === undefined) delete process.env.GEMINI_MODEL;
     else process.env.GEMINI_MODEL = previousModel;
   }
+});
+
+test("Node.js fetch abort messages are classified as timeouts", () => {
+  const error = new Error("This operation was aborted");
+  assert.equal(isTimeoutError(error), true);
+  assert.match(errorForUser(error), /слишком медленно/);
+  assert.equal(isTimeoutError(new Error("GEMINI_KEY_REJECTED")), false);
 });
