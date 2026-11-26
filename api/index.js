@@ -4,7 +4,7 @@ const MAX_HISTORY_MESSAGE_CHARS = 600;
 const MAX_SESSION_STATE_BYTES = 900;
 const MAX_ALICE_TEXT = 1024;
 const TOTAL_RESPONSE_BUDGET_MS = 4000;
-const SERPER_TIMEOUT_MS = 400;
+const SERPER_TIMEOUT_MS = 1000;
 const GEMINI_TIMEOUT_MS = 3200;
 const GEMINI_RETRY_DELAY_MS = 120;
 
@@ -13,6 +13,7 @@ const SYSTEM_PROMPT = [
   "Отвечай по-русски, естественно и кратко: обычно 1–3 предложения.",
   "Не используй Markdown, таблицы, списки и длинные вступления.",
   "Если переданы результаты поиска, используй их для актуальных фактов и не выдумывай данные.",
+  "Если вопрос требует актуальных сведений, но результаты поиска не переданы, прямо скажи, что сейчас не удалось проверить информацию. Не угадывай текущие версии, должности, цены, новости, погоду и другие изменяющиеся факты.",
   "Если не знаешь ответа, скажи об этом прямо."
 ].join(" ");
 
@@ -116,8 +117,10 @@ async function fetchJson(url, options, timeoutMs) {
 
 async function searchWeb(query, timeoutMs) {
   const key = process.env.SERPER_API_KEY;
-  if (!key || timeoutMs < 150) return "";
+  if (!key) return { context: "", status: "not_configured", http_status: null, result_count: 0 };
+  if (timeoutMs < 150) return { context: "", status: "budget_exhausted", http_status: null, result_count: 0 };
 
+  const startedAt = Date.now();
   try {
     const { response, data } = await fetchJson(
       "https://google.serper.dev/search",
@@ -133,8 +136,14 @@ async function searchWeb(query, timeoutMs) {
     );
 
     if (!response.ok) {
-      console.warn("Serper request failed with HTTP", response.status);
-      return "";
+      const result = {
+        context: "",
+        status: "http_error",
+        http_status: response.status,
+        result_count: 0
+      };
+      console.warn("Serper request completed:", { ...result, duration_ms: Date.now() - startedAt });
+      return result;
     }
 
     const items = (Array.isArray(data.organic) ? data.organic : [])
@@ -148,10 +157,27 @@ async function searchWeb(query, timeoutMs) {
 
     const answerBox = data.answerBox?.answer || data.answerBox?.snippet;
     if (answerBox) items.unshift(`Краткий ответ поисковика: ${String(answerBox).slice(0, 350)}`);
-    return items.length ? items.join("\n") : "";
+    const context = items.length ? items.join("\\n") : "";
+    const result = {
+      context,
+      status: context ? "success" : "no_results",
+      http_status: response.status,
+      result_count: items.length
+    };
+    console.info("Serper request completed:", { ...result, context: undefined, duration_ms: Date.now() - startedAt });
+    return result;
   } catch (error) {
-    console.warn("Serper request did not finish in time; continuing without search.");
-    return "";
+    const timedOut = isTimeoutError(error);
+    const result = {
+      context: "",
+      status: timedOut ? "timeout" : "network_error",
+      http_status: null,
+      result_count: 0,
+      error_name: error?.name || "Error",
+      error_code: error?.cause?.code || error?.code || null
+    };
+    console.warn("Serper request failed:", { ...result, duration_ms: Date.now() - startedAt });
+    return result;
   }
 }
 
@@ -304,17 +330,25 @@ export default async function handler(req, res) {
 
   try {
     let searchContext = "";
-    if (isSearchIntent(text) && process.env.SERPER_API_KEY) {
-      const serperStartedAt = Date.now();
-      searchContext = await searchWeb(text, Math.min(SERPER_TIMEOUT_MS, Math.max(0, remainingMs() - 2600)));
+    const needsFreshData = isSearchIntent(text);
+    if (needsFreshData) {
+      const searchResult = await searchWeb(text, Math.min(SERPER_TIMEOUT_MS, Math.max(0, remainingMs() - 2600)));
+      searchContext = searchResult.context;
       console.info("Serper stage completed:", {
-        duration_ms: Date.now() - serperStartedAt,
+        status: searchResult.status,
+        duration_budget_ms: Math.min(SERPER_TIMEOUT_MS, Math.max(0, remainingMs() - 2600)),
+        http_status: searchResult.http_status,
+        result_count: searchResult.result_count,
         results_available: Boolean(searchContext)
       });
     }
 
+    const geminiInput = needsFreshData && !searchContext
+      ? `${text}\\n\\nВАЖНО: актуальные данные не удалось получить через поиск. Не сообщай текущие сведения как факт и не делай предположений. Кратко объясни, что проверить актуальную информацию сейчас не удалось.`
+      : text;
+
     const answer = await askGemini(
-      text,
+      geminiInput,
       oldHistory,
       searchContext,
       Math.max(0, Math.min(GEMINI_TIMEOUT_MS, remainingMs() - 600))
