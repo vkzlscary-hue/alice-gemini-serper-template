@@ -85,7 +85,7 @@ function fitAliceText(value) {
 }
 
 function isSearchIntent(text) {
-  return /\b(latest|today|current|news|weather|price|exchange rate|recent|search|look up)\b|сегодня|сейчас|последн|новост|погод|курс валют|найди|поищи|актуальн|сколько стоит|свежие данные/i.test(text);
+  return /\\b(latest|today|current|currently|news|weather|price|exchange rate|recent|release|released|version|search|look up)\\b|сегодня|сейчас|последн|новост|погод|курс валют|найди|поищи|актуальн|сколько стоит|свежие данные|вышл[аио]?|релиз|верси[яию]|кто такой|генеральн[ыо]й директор/i.test(text);
 }
 
 function safeHistory(history) {
@@ -332,11 +332,12 @@ export default async function handler(req, res) {
     let searchContext = "";
     const needsFreshData = isSearchIntent(text);
     if (needsFreshData) {
-      const searchResult = await searchWeb(text, Math.min(SERPER_TIMEOUT_MS, Math.max(0, remainingMs() - 2600)));
+      const serperBudgetMs = Math.min(SERPER_TIMEOUT_MS, Math.max(0, remainingMs() - 2600));
+      const searchResult = await searchWeb(text, serperBudgetMs);
       searchContext = searchResult.context;
       console.info("Serper stage completed:", {
         status: searchResult.status,
-        duration_budget_ms: Math.min(SERPER_TIMEOUT_MS, Math.max(0, remainingMs() - 2600)),
+        timeout_budget_ms: serperBudgetMs,
         http_status: searchResult.http_status,
         result_count: searchResult.result_count,
         results_available: Boolean(searchContext)
