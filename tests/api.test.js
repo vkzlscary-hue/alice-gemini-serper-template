@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { aliceResponse, fitAliceText, isSearchIntent, safeHistory } from "../api/index.js";
+import handler, { aliceResponse, errorForUser, fitAliceText, fitHistory, isSearchIntent, isTimeoutError, safeHistory } from "../api/index.js";
 
 test("Alice response uses required response envelope", () => {
   const result = aliceResponse("Привет", false, [{ role: "user", text: "тест" }]);
@@ -31,8 +31,19 @@ test("history filters malformed messages and keeps last 8", () => {
   assert.equal(result[7].text, "11");
 });
 
+test("session history stays within the 1 KB Yandex state limit", () => {
+  const input = Array.from({ length: 8 }, (_, i) => ({
+    role: i % 2 ? "model" : "user",
+    text: `Сообщение ${i}: ${"длинный текст ".repeat(100)}`
+  }));
+  const result = fitHistory(input);
+  assert.ok(new TextEncoder().encode(JSON.stringify({ history: result })).length <= 900);
+  assert.equal(result.at(-1).role, "model");
+  assert.ok(result.at(-1).text.length < input.at(-1).text.length);
+  assert.ok(result.length < input.length);
+});
+
 test("GET health check returns an ok response", async () => {
-  const handler = (await import("../api/index.js")).default;
   let statusCode = 200;
   let payload;
   const res = {
@@ -47,7 +58,6 @@ test("GET health check returns an ok response", async () => {
 });
 
 test("launch request returns a valid Alice greeting without external API keys", async () => {
-  const handler = (await import("../api/index.js")).default;
   let statusCode = 200;
   let payload;
   const res = {
@@ -60,4 +70,52 @@ test("launch request returns a valid Alice greeting without external API keys", 
   assert.equal(payload.version, "1.0");
   assert.match(payload.response.text, /Привет/);
   assert.equal(payload.response.end_session, false);
+});
+
+test("Gemini 503 is retried once and the answer is returned", async t => {
+  const previousKey = process.env.GEMINI_API_KEY;
+  const previousModel = process.env.GEMINI_MODEL;
+  delete process.env.GEMINI_MODEL;
+  process.env.GEMINI_API_KEY = "test-key";
+
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response(JSON.stringify({ error: { message: "temporary unavailable" } }), {
+        status: 503,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+    return new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: "Проверочный ответ" }] } }]
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  });
+
+  try {
+    let payload;
+    const res = {
+      status() { return this; },
+      json(value) { payload = value; return value; },
+      setHeader() {}
+    };
+    await handler({ method: "POST", body: { request: { command: "Расскажи что-нибудь" } } }, res);
+    assert.equal(calls, 2);
+    assert.equal(payload.response.text, "Проверочный ответ");
+  } finally {
+    if (previousKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousKey;
+    if (previousModel === undefined) delete process.env.GEMINI_MODEL;
+    else process.env.GEMINI_MODEL = previousModel;
+  }
+});
+
+test("Node.js fetch abort messages are classified as timeouts", () => {
+  const error = new Error("This operation was aborted");
+  assert.equal(isTimeoutError(error), true);
+  assert.match(errorForUser(error), /слишком медленно/);
+  assert.equal(isTimeoutError(new Error("GEMINI_KEY_REJECTED")), false);
 });
