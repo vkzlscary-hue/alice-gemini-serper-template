@@ -184,8 +184,9 @@ async function askGemini(text, history, searchContext, timeoutMs) {
       systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
       contents,
       generationConfig: {
-        // LOW gives the voice assistant some reasoning headroom without the latency of MEDIUM/HIGH.
-        thinkingConfig: { thinkingLevel: "LOW" },
+        // MINIMAL is the lowest-latency thinking level supported by Gemini 3.5 Flash-Lite.
+        thinkingConfig: { thinkingLevel: "MINIMAL" },
+        // Keep 512: maxOutputTokens is a hard cap that also includes thinking tokens.
         maxOutputTokens: 512
       }
     })
@@ -198,7 +199,22 @@ async function askGemini(text, history, searchContext, timeoutMs) {
     const remainingMs = deadline - Date.now();
     if (remainingMs < 250) throw new Error("TIME_BUDGET_EXHAUSTED");
 
-    result = await fetchJson(requestUrl, requestOptions, remainingMs);
+    const attemptStartedAt = Date.now();
+    try {
+      result = await fetchJson(requestUrl, requestOptions, remainingMs);
+    } catch (error) {
+      console.warn("Gemini request did not complete:", {
+        attempt: attempt + 1,
+        duration_ms: Date.now() - attemptStartedAt,
+        error: error?.name || "Error"
+      });
+      throw error;
+    }
+    console.info("Gemini request completed:", {
+      attempt: attempt + 1,
+      duration_ms: Date.now() - attemptStartedAt,
+      http_status: result.response.status
+    });
     if (result.response.ok) break;
 
     const status = Number(result.response.status);
@@ -291,7 +307,12 @@ export default async function handler(req, res) {
     let searchContext = "";
     if (isSearchIntent(text) && process.env.SERPER_API_KEY) {
       // Search has a very short budget because Alice expects a response within 4.5 seconds.
+      const serperStartedAt = Date.now();
       searchContext = await searchWeb(text, Math.min(SERPER_TIMEOUT_MS, Math.max(0, remainingMs() - 2600)));
+      console.info("Serper stage completed:", {
+        duration_ms: Date.now() - serperStartedAt,
+        results_available: Boolean(searchContext)
+      });
     }
 
     const answer = await askGemini(
@@ -307,10 +328,15 @@ export default async function handler(req, res) {
       { role: "model", text: answer.slice(0, MAX_HISTORY_MESSAGE_CHARS) }
     ]);
 
+    console.info("Alice webhook completed:", {
+      duration_ms: Date.now() - startedAt,
+      outcome: "success"
+    });
     return res.status(200).json(aliceResponse(answer, false, history));
   } catch (error) {
     const safeError = isTimeoutError(error) ? new Error("TIME_BUDGET_EXHAUSTED") : error;
     console.warn("Alice webhook returned a fallback response:", {
+      duration_ms: Date.now() - startedAt,
       error: safeError?.message || "unknown error",
       name: error?.name || "Error"
     });
