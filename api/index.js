@@ -1,6 +1,6 @@
 const DEFAULT_MODEL = "gemini-3.5-flash-lite";
-const MAX_HISTORY_MESSAGES = 8;
-const MAX_HISTORY_MESSAGE_CHARS = 1200;
+const MAX_HISTORY_MESSAGES = 4;
+const MAX_HISTORY_MESSAGE_CHARS = 600;
 const MAX_SESSION_STATE_BYTES = 900;
 const MAX_ALICE_TEXT = 1024;
 const TOTAL_RESPONSE_BUDGET_MS = 4000;
@@ -9,11 +9,11 @@ const GEMINI_TIMEOUT_MS = 3200;
 const GEMINI_RETRY_DELAY_MS = 120;
 
 const SYSTEM_PROMPT = [
-  "Ты — полезный голосовой помощник в навыке Яндекс Алисы.",
-  "Отвечай естественно, по-русски, кратко и так, чтобы ответ было удобно слушать.",
-  "Обычно используй 1–3 коротких предложения. Не используй Markdown, таблицы, списки с символами или длинные вступления.",
-  "Если вопрос требует актуальных данных и переданы результаты поиска, опирайся на них; не выдумывай отсутствующие факты.",
-  "Если не знаешь ответа, честно скажи об этом."
+  "Ты — голосовой помощник Яндекс Алисы.",
+  "Отвечай по-русски, естественно и кратко: обычно 1–3 предложения.",
+  "Не используй Markdown, таблицы, списки и длинные вступления.",
+  "Если переданы результаты поиска, используй их для актуальных фактов и не выдумывай данные.",
+  "Если не знаешь ответа, скажи об этом прямо."
 ].join(" ");
 
 function truncateUtf8(value, maxBytes) {
@@ -184,10 +184,9 @@ async function askGemini(text, history, searchContext, timeoutMs) {
       systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
       contents,
       generationConfig: {
-        // MINIMAL is the lowest-latency thinking level supported by Gemini 3.5 Flash-Lite.
         thinkingConfig: { thinkingLevel: "MINIMAL" },
-        // Keep 512: maxOutputTokens is a hard cap that also includes thinking tokens.
-        maxOutputTokens: 512
+        // Voice responses are short; a smaller cap limits unnecessary generation.
+        maxOutputTokens: 256
       }
     })
   };
@@ -306,7 +305,6 @@ export default async function handler(req, res) {
   try {
     let searchContext = "";
     if (isSearchIntent(text) && process.env.SERPER_API_KEY) {
-      // Search has a very short budget because Alice expects a response within 4.5 seconds.
       const serperStartedAt = Date.now();
       searchContext = await searchWeb(text, Math.min(SERPER_TIMEOUT_MS, Math.max(0, remainingMs() - 2600)));
       console.info("Serper stage completed:", {
