@@ -3,9 +3,9 @@ const MAX_HISTORY_MESSAGES = 8;
 const MAX_HISTORY_MESSAGE_CHARS = 1200;
 const MAX_SESSION_STATE_BYTES = 900;
 const MAX_ALICE_TEXT = 1024;
-const TOTAL_RESPONSE_BUDGET_MS = 3600;
-const SERPER_TIMEOUT_MS = 600;
-const GEMINI_TIMEOUT_MS = 2500;
+const TOTAL_RESPONSE_BUDGET_MS = 4000;
+const SERPER_TIMEOUT_MS = 400;
+const GEMINI_TIMEOUT_MS = 3200;
 const GEMINI_RETRY_DELAY_MS = 120;
 
 const SYSTEM_PROMPT = [
@@ -102,6 +102,13 @@ async function fetchJson(url, options, timeoutMs) {
     const response = await fetch(url, { ...options, signal: controller.signal });
     const data = await response.json().catch(() => ({}));
     return { response, data };
+  } catch (error) {
+    if (controller.signal.aborted) {
+      const timeoutError = new Error("REQUEST_TIMEOUT");
+      timeoutError.name = "TimeoutError";
+      throw timeoutError;
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -177,7 +184,9 @@ async function askGemini(text, history, searchContext, timeoutMs) {
       systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
       contents,
       generationConfig: {
-        maxOutputTokens: 240
+        // LOW gives the voice assistant some reasoning headroom without the latency of MEDIUM/HIGH.
+        thinkingConfig: { thinkingLevel: "LOW" },
+        maxOutputTokens: 512
       }
     })
   };
@@ -224,7 +233,18 @@ async function askGemini(text, history, searchContext, timeoutMs) {
   return answer;
 }
 
+function isTimeoutError(error) {
+  return error?.name === "AbortError" ||
+    error?.name === "TimeoutError" ||
+    ["TIME_BUDGET_EXHAUSTED", "REQUEST_TIMEOUT", "AbortError"].includes(error?.message) ||
+    /operation was aborted/i.test(String(error?.message || ""));
+}
+
 function errorForUser(error) {
+  if (isTimeoutError(error)) {
+    return "Ответ получается слишком медленно. Попробуйте задать вопрос короче или повторить немного позже.";
+  }
+
   switch (error?.message) {
     case "MISSING_GEMINI_KEY":
       return "Сервер пока не настроен. Проверьте переменную GEMINI_API_KEY в настройках Vercel.";
@@ -234,9 +254,6 @@ function errorForUser(error) {
       return "Сейчас превышен лимит запросов к Gemini. Попробуйте немного позже.";
     case "GEMINI_BLOCKED":
       return "Я не смогла обработать этот запрос. Попробуйте спросить иначе.";
-    case "TIME_BUDGET_EXHAUSTED":
-    case "AbortError":
-      return "Не успела подготовить ответ. Попробуйте задать вопрос ещё раз, чуть короче.";
     default:
       return "Не получилось получить ответ от нейросети. Попробуйте ещё раз чуть позже.";
   }
@@ -292,10 +309,13 @@ export default async function handler(req, res) {
 
     return res.status(200).json(aliceResponse(answer, false, history));
   } catch (error) {
-    const safeError = error?.message === "AbortError" ? "TIME_BUDGET_EXHAUSTED" : error;
-    console.warn("Alice webhook returned a fallback response:", safeError?.message || "unknown error");
+    const safeError = isTimeoutError(error) ? new Error("TIME_BUDGET_EXHAUSTED") : error;
+    console.warn("Alice webhook returned a fallback response:", {
+      error: safeError?.message || "unknown error",
+      name: error?.name || "Error"
+    });
     return res.status(200).json(aliceResponse(errorForUser(safeError), false, oldHistory));
   }
 }
 
-export { aliceResponse, fitAliceText, fitHistory, isSearchIntent, safeHistory };
+export { aliceResponse, errorForUser, fitAliceText, fitHistory, isSearchIntent, isTimeoutError, safeHistory };
